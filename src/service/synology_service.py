@@ -228,6 +228,8 @@ def random_pick_from_person_database(person_id=None, start_time=None, end_time=N
         query = query.filter(Photo.shooting_time >= start_time)
     if end_time:
         query = query.filter(Photo.shooting_time <= end_time)
+    # 排除黑名單（#41：以前只在寫入 exist_person_photos 時過濾，黑名單照片照樣被上傳）
+    query = query.filter(~Photo.item_id.in_(select(PhotoBlacklist.photo_id)))
 
     photos = (
         query.order_by(func.random())
