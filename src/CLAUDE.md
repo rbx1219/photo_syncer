@@ -35,6 +35,9 @@
 3. 清空 Google 相簿既有內容（`move_items_to_trash_album` 複製到「待刪除照片」相簿，再 `batchRemoveMediaItems`，每批 49）
 4. `run_upload`：`get_photos_upload_to_album`（`service/google_service.py`）從 DB 隨機挑 `numPhotos` 張該人物照片 → 寫入 ExistPerson → 16 條下載 thread（Synology → `SYNO_DOWNLOAD_DIR`）+ 16 條上傳 thread（`/v1/uploads` 取 upload token）→ `add_photos_to_album`（每批 45）
 5. 更新 batch status `uploading` → `success`/`failed`，LINE notify。
+   - 下載／上傳失敗的照片會被計數，不會讓整批卡住；部分失敗仍算 `success`，但使用者看到「成功 x/y 張」、管理員收到靜音 Telegram。
+   - 全部失敗、沒有照片、加進相簿失敗都拋 `UploadError` → `failed`，同時通知使用者（LINE）與管理員（Telegram）。
+   - 通知一律走 `utils/alert.py`（有 timeout、不拋例外；告警內容會先 `scrub` 掉 URL query 與 token）。
 
 若 DB 中沒有該人物照片，改用 `threading.Timer` 背景跑 `background_sync_and_upload`（全量同步該人物到 DB），並回覆使用者稍後再試。
 
@@ -59,7 +62,7 @@ DB 連線字串寫死在 `models/database.py`（`pgsql_photos:5432`），只能�
 
 ## Google OAuth
 
-`lib/google.authenticate()` 讀寫寫死路徑 `/app/token.pickle`、`/app/client_secret.json`；token 無效時跑 `InstalledAppFlow.run_local_server`。首次授權：`docker exec -it google-photos python tools/get_cred.py`。
+`lib/google.authenticate()` 讀寫 `GOOGLE_TOKEN_PATH`／`GOOGLE_CLIENT_SECRET_PATH`（預設 `/app/token.pickle`、`/app/client_secret.json`），過期就 refresh。refresh 失敗或沒有可用 token 時拋 `GoogleAuthError` 並發 Telegram 告警（30 分鐘內只發一次）；**只有 `authenticate(interactive=True)`（`tools/get_cred.py`）才會跑瀏覽器授權**，服務內不會再卡在 `run_local_server`。
 
 ## 慣例
 
@@ -70,6 +73,9 @@ DB 連線字串寫死在 `models/database.py`（`pgsql_photos:5432`），只能�
 ## 測試
 
 `docker exec google-photos python -m pytest tests/test_google_service.py`
+離線跑（不需 Postgres，`models` 的 `create_all` 會建在記憶體 SQLite；本機 Python 3.12 裝不到 `psycopg-binary==3.1.11`，略過它即可）：
+`cd src && DATABASE_URL=sqlite:// SERVER_URL=http://example.invalid PYTHONPATH=. python -m pytest tests --ignore=tests/test_google_auth.py --ignore=tests/test_synlogy.py --ignore=tests/test_sync_service.py`
+（`test_get_photos_upload.py` 有 3 個既有失敗：測試的參數跟 `get_photos_upload_to_album` 目前的簽章對不上）
 只有 `test_google_service.py` 是純 mock 且可正常執行。`test_google_auth.py`、`test_synlogy.py` 會打真實服務；`test_sync_service.py` 測的是已不存在的 `background_sync`/`run_sync`，需重寫；其餘測試 import `models` 時會觸發 `create_all` 連線 DB，所以必須在容器內執行。
 
 ## 已知問題（修改相關程式碼時留意）

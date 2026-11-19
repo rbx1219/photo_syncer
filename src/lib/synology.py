@@ -26,6 +26,10 @@ WEB_STATION_URL = 'https://192-168-50-163.irisyen115.direct.quickconnect.to:5001
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 
+# (連線, 讀取) 秒；沒設 timeout 時 NAS 沒回應會讓 thread 永遠卡住
+SYNO_TIMEOUT = (10, 60)
+SYNO_DOWNLOAD_TIMEOUT = (10, 180)
+
 HEADERS = {
     'accept': '*/*',
     'accept-language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -51,7 +55,7 @@ def login(account, password, fid, timezone):
         'client': 'browser',
         'fid': fid
     }
-    resp = session.post(url, headers=HEADERS, data=payload, verify=False)
+    resp = session.post(url, headers=HEADERS, data=payload, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     data = resp.json()
 
@@ -79,7 +83,7 @@ def get_album(auth, album_id):
         "album_id": album_id,
         "additional": '["sharing_info","thumbnail"]'
     }
-    resp = session.post(url, headers=HEADERS, params={'SynoToken': token}, data=payload, verify=False)
+    resp = session.post(url, headers=HEADERS, params={'SynoToken': token}, data=payload, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     return resp.json()['data']
 
@@ -109,7 +113,7 @@ def get_person(auth, person_id):
 
     cookies = auth.get('cookies', {})
 
-    resp = session.post(url, headers=headers, data=data, cookies=cookies, verify=False)
+    resp = session.post(url, headers=headers, data=data, cookies=cookies, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     result = resp.json()
 
@@ -134,7 +138,7 @@ def list_albums(auth):
         "sort_direction": "desc",
         "additional": "[\"sharing_info\",\"thumbnail\"]"
     }
-    resp = session.post(url, headers=HEADERS, params={'SynoToken': token}, data=payload, verify=False)
+    resp = session.post(url, headers=HEADERS, params={'SynoToken': token}, data=payload, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -156,7 +160,8 @@ def list_people(auth, limit):
         headers=HEADERS,
         params={'SynoToken': token},
         data=payload,
-        verify=False
+        verify=False,
+        timeout=SYNO_TIMEOUT,
     )
     resp.raise_for_status()
     return resp.json()['data']['list']
@@ -191,7 +196,7 @@ def list_photos_by_album(auth, album_id, offset=0, limit=100):
         "album_id": album_id,
     }
 
-    resp = session.post(url, headers=headers, data=payload, verify=False)
+    resp = session.post(url, headers=headers, data=payload, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     return resp.json()['data']['list']
 
@@ -211,7 +216,7 @@ def list_photos_by_person(auth, person_id, offset=0, limit=100):
         "person_id": person_id,
     }
 
-    resp = session.post(url, headers=headers, data=payload, verify=False)
+    resp = session.post(url, headers=headers, data=payload, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     return resp.json()['data']['list']
 
@@ -233,7 +238,7 @@ def list_photos_by_person_and_interval_time(auth, person_id, start_dt, end_dt, o
         "person_id": person_id
     }
 
-    resp = session.post(url, headers=headers, data=payload, verify=False)
+    resp = session.post(url, headers=headers, data=payload, verify=False, timeout=SYNO_TIMEOUT)
     resp.raise_for_status()
     data = resp.json()
 
@@ -259,7 +264,7 @@ def download_photo(auth, item, save_path=None):
         'version': '2'
     }
 
-    resp = session.post(url, headers=HEADERS, params=params, data=data, verify=False)
+    resp = session.post(url, headers=HEADERS, params=params, data=data, verify=False, timeout=SYNO_DOWNLOAD_TIMEOUT)
     resp.raise_for_status()
 
     with open(save_path, 'wb') as f:
@@ -267,7 +272,7 @@ def download_photo(auth, item, save_path=None):
 
 def thumb_photo(id, cache_key, auth):
     url = f'{BASE_URL}/synofoto/api/v2/p/Thumbnail/get?id={id}&cache_key="{cache_key}"&type="person"&SynoToken={auth["data"]["synotoken"]}'
-    response = session.get(url, verify=False)
+    response = session.get(url, verify=False, timeout=SYNO_TIMEOUT)
     response.raise_for_status()
 
     with open(f"/app/face_image/{id}.jpg", "wb") as f:

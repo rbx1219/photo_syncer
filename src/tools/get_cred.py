@@ -1,3 +1,3 @@
 from lib.google import authenticate
 
-creds = authenticate()
+creds = authenticate(interactive=True)

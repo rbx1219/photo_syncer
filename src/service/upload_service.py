@@ -2,7 +2,8 @@ import os, json, threading, time, queue
 from lib.synology import login, list_people, list_selected_people, thumb_photo, download_photo
 from lib.google import (
     get_service, get_or_create_album, add_photos_to_album,
-    upload_photo_bytes, delete_all_photos_from_album, move_items_to_trash_album
+    upload_photo_bytes, delete_all_photos_from_album, move_items_to_trash_album,
+    GoogleAuthError,
 )
 from service.google_service import get_photos_upload_to_album
 from flask import jsonify
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 import requests
 from cachetools import TTLCache
 from service.user_service import get_user_info_service
+from utils.alert import notify_admin, notify_line
 from datetime import datetime, time as dtime
 
 load_dotenv()
@@ -50,12 +52,30 @@ def release_album(album_name):
         _album_uploads.pop(album_name, None)
 
 
+class UploadError(Exception):
+    """上傳流程中「已知原因」的失敗；訊息會直接給使用者看。"""
+
+
 def background_upload(creds, auth, token, album_name, *args, **kwargs):
     """背景上傳；不論成功、失敗或例外都會釋放相簿鎖。"""
     try:
         _background_upload(creds, auth, token, album_name, *args, **kwargs)
+    except Exception as e:
+        # 正常的失敗都在 _background_upload 裡處理掉了；會跑到這裡的是沒預期到的錯誤
+        logging.exception("❌ 背景上傳發生未預期的錯誤")
+        notify_admin(f"❌ photo-syncer 背景上傳未預期錯誤｜相簿「{album_name}」\n{type(e).__name__}: {e}")
     finally:
         release_album(album_name)
+
+
+def _fail_batch(batch_id, token, album_name, person_id, user_reason, error=None):
+    """把批次標成 failed，並同時通知使用者（LINE）與管理員（Telegram）。"""
+    update_batch_status(batch_id, "failed")
+    notify_line(token, f"❌ 上傳失敗，第 {batch_id} 批次：{user_reason}")
+    if isinstance(error, GoogleAuthError):
+        return  # lib.google 已經發過 OAuth 告警（含重新授權步驟），不重複發
+    detail = f"\n{type(error).__name__}: {error}" if error else ""
+    notify_admin(f"❌ photo-syncer 上傳失敗｜第 {batch_id} 批次｜相簿「{album_name}」｜person {person_id}\n{user_reason}{detail}")
 
 
 def _background_upload(creds, auth, token, album_name, person_id, album_id, num_photos, start_time, batch_id, start_dt=None, end_dt=None):
@@ -64,17 +84,7 @@ def _background_upload(creds, auth, token, album_name, person_id, album_id, num_
         google_album_id = get_or_create_album(service, album_name)
     except Exception as e:
         logging.exception("❌ 建立 Google 相簿失敗")
-        update_batch_status(batch_id, "failed")
-        try:
-            requests.post(
-                f"{Config.LINE_API_URL}/notify",
-                json={
-                    "message": f"❌ 建立相簿失敗，第 {batch_id} 批次中止",
-                    "token": token
-                }
-            )
-        except Exception as notify_error:
-            logging.error(f"LINE 通知失敗：{notify_error}")
+        _fail_batch(batch_id, token, album_name, person_id, "無法建立或取得 Google 相簿", e)
         return
 
     try:
@@ -95,28 +105,30 @@ def _background_upload(creds, auth, token, album_name, person_id, album_id, num_
     try:
         update_batch_status(batch_id, "uploading")
         result = run_upload(auth, creds, person_id, album_id, num_photos, google_album_id, token, start_dt, end_dt)
-
-        logging.error(f"✅ 同步完成，共上傳 {result['uploaded']} 張照片，耗時 {round(time.time() - start_time, 2)} 秒")
-        update_batch_status(batch_id, "success")
-
-        requests.post(
-            f"{Config.LINE_API_URL}/notify",
-            json={
-                "message": f"✅ 上傳完成，共上傳 {result['uploaded']} 張照片",
-                "token": token
-            }
-        )
+    except UploadError as e:
+        logging.error("❌ 第 %s 批次上傳失敗：%s", batch_id, e)
+        _fail_batch(batch_id, token, album_name, person_id, str(e), e.__cause__)
+        return
     except Exception as e:
-        logging.exception("❌ 同步過程發生錯誤")
-        update_batch_status(batch_id, "failed")
+        logging.exception("❌ 第 %s 批次上傳過程發生錯誤", batch_id)
+        _fail_batch(batch_id, token, album_name, person_id, "上傳過程發生錯誤", e)
+        return
 
-        requests.post(
-            f"{Config.LINE_API_URL}/notify",
-            json={
-                "message": f"❌ 上傳失敗,第{batch_id}批次",
-                "token": token
-            }
+    # 成功之後的通知失敗不影響批次狀態（舊版通知失敗會掉進 except，把已上傳成功的批次標成 failed）
+    update_batch_status(batch_id, "success")
+    uploaded, requested, failed = result["uploaded"], result["requested"], result["failed"]
+    elapsed = round(time.time() - start_time)
+    logging.info("✅ 第 %s 批次完成：%s/%s 張，耗時 %ss", batch_id, uploaded, requested, elapsed)
+
+    if failed:
+        notify_line(token, f"⚠️ 上傳完成，但只成功 {uploaded}/{requested} 張（{len(failed)} 張失敗）")
+        notify_admin(
+            f"⚠️ photo-syncer 部分上傳失敗｜第 {batch_id} 批次｜相簿「{album_name}」\n"
+            f"成功 {uploaded}/{requested} 張，失敗 {len(failed)} 張，例如：{', '.join(failed[:5])}",
+            silent=True,
         )
+    else:
+        notify_line(token, f"✅ 上傳完成，共上傳 {uploaded} 張照片")
 
 def update_people_list(auth, user_id, notify=True):
     if not auth:
@@ -243,44 +255,67 @@ def handle_upload(request, creds, session):
     })
 
 def run_upload(auth, creds, person_id, album_id, num_photos, google_album_id, token, start_time=None, end_time=None):
+    """下載 → 上傳 → 加進相簿。
+
+    回傳 {"requested", "uploaded", "failed"（檔名清單）, "messages"}；
+    整批都沒有成果時拋 UploadError（舊版回傳 uploaded=0，外層會把它當成功）。
+    """
     download_queue = queue.Queue()
     photo_queue = queue.Queue()
     token_map = {}
-    token_map_lock = threading.Lock()
+    failed = []
+    lock = threading.Lock()
 
     report = get_photos_upload_to_album(auth, person_id, album_id, num_photos, token, start_time, end_time)
-    logging.error(f"get_photos_upload_to_album report: {report}")
     if not report:
-        logging.error("⚠️ 獲取照片上傳報告失敗，請檢查 Synology 服務是否正常")
-        return {"uploaded": 0, "messages": ["無法獲取照片上傳報告"]}
-    logging.error(f"獲取到 {len(report.get('photos', []))} 張照片，準備下載和上傳到 Google 相簿")
-    for photo in report.get("photos", []):
+        raise UploadError("無法從 Synology 取得要上傳的照片，請檢查 NAS 是否正常")
+    photos = report.get("photos", [])
+    if not photos:
+        raise UploadError("沒有可上傳的照片")
+    logging.info("取得 %s 張照片，準備下載並上傳到 Google 相簿", len(photos))
+    for photo in photos:
         download_queue.put(photo)
 
+    def record_failure(filename, stage, error):
+        logging.warning("%s %s 失敗：%s", stage, filename, error)
+        with lock:
+            failed.append(filename)
+
     def download_worker():
+        # download_queue 在啟動前就放滿了，空了就代表沒工作
         while True:
             try:
-                p = download_queue.get(timeout=2)
+                p = download_queue.get_nowait()
             except queue.Empty:
-                break
+                return
             saved_path = os.path.join(DOWNLOAD_DIR, p['filename'])
-            download_photo(auth, p, save_path=saved_path)
-            photo_queue.put(p['filename'])
-            download_queue.task_done()
+            try:
+                download_photo(auth, p, save_path=saved_path)
+                photo_queue.put(p['filename'])
+            except Exception as e:
+                # 舊版沒接例外：thread 直接死掉、task_done 沒呼叫，download_queue.join() 永遠卡住
+                record_failure(p['filename'], "下載", e)
+                try:
+                    os.remove(saved_path)
+                except OSError:
+                    pass
+            finally:
+                download_queue.task_done()
 
     def upload_worker():
+        # 收到 None 才結束（舊版 queue 空 2 秒就結束，下載比較慢時 uploader 會先走光，photo_queue.join() 永遠卡住）
         while True:
+            filename = photo_queue.get()
+            if filename is None:
+                photo_queue.task_done()
+                return
+            saved_path = os.path.join(DOWNLOAD_DIR, filename)
             try:
-                filename = photo_queue.get(timeout=2)
-            except queue.Empty:
-                break
-            try:
-                saved_path = os.path.join(DOWNLOAD_DIR, filename)
                 token_filename = upload_photo_bytes(creds, saved_path)
-                with token_map_lock:
+                with lock:
                     token_map[filename] = token_filename
             except Exception as e:
-                logging.error(f"上傳 {filename} 失敗: {e}")
+                record_failure(filename, "上傳", e)
             finally:
                 # 下載的原圖只是上傳用的暫存：bytes 已送到 Google（之後 batchCreate 只用 upload token），立即刪除
                 # （舊版從不刪除，NAS 上累積到 7,651 張 / 19G）
@@ -290,27 +325,29 @@ def run_upload(auth, creds, person_id, album_id, num_photos, google_album_id, to
                     pass
                 photo_queue.task_done()
 
-    downloaders = [threading.Thread(target=download_worker) for _ in range(NUM_DOWNLOAD_THREADS)]
-    uploaders = [threading.Thread(target=upload_worker) for _ in range(NUM_UPLOAD_THREADS)]
-
+    downloaders = [threading.Thread(target=download_worker, daemon=True) for _ in range(NUM_DOWNLOAD_THREADS)]
+    uploaders = [threading.Thread(target=upload_worker, daemon=True) for _ in range(NUM_UPLOAD_THREADS)]
     for t in downloaders + uploaders:
-        t.daemon = True
         t.start()
     for t in downloaders:
         t.join()
-    download_queue.join()
+    for _ in uploaders:
+        photo_queue.put(None)
     for t in uploaders:
         t.join()
-    photo_queue.join()
+
+    if not token_map:
+        raise UploadError(f"{len(photos)} 張照片全部下載或上傳失敗")
 
     try:
         add_photos_to_album(creds, google_album_id, token_map)
     except Exception as e:
-        logging.error(f"添加照片到 Google 相簿失敗: {e}")
-        return {"uploaded": 0, "messages": ["添加照片到 Google 相簿失敗"]}
+        raise UploadError("照片已上傳，但加進 Google 相簿失敗") from e
 
     return {
+        "requested": len(photos),
         "uploaded": len(token_map),
-        "messages": report['messages']
+        "failed": failed,
+        "messages": report.get("messages", []),
     }
 

@@ -9,6 +9,8 @@ from google_auth_oauthlib.flow import Flow
 from google_auth_oauthlib.flow import InstalledAppFlow
 import logging
 
+from utils.alert import notify_admin
+
 logging.basicConfig(filename="error.log", level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 
 SCOPES = [
@@ -28,6 +30,9 @@ API_BASE_URL = 'https://photoslibrary.googleapis.com/v1/'
 UPLOAD_PHOTO_BYTES_ENDPOINT = f'{API_BASE_URL}uploads'
 ADD_MEDIA_ITEMS_TO_ALBUM_ENDPOINT = f'{API_BASE_URL}mediaItems:batchCreate'
 UPLOAD_PHOTO_NUM = 10
+# (連線, 讀取) 秒；上傳原圖可能較久
+UPLOAD_TIMEOUT = (10, 180)
+API_TIMEOUT = (10, 60)
 
 # 可由環境變數覆寫（k8s 中 token 放在可寫的 PVC，client_secret 來自 Secret）；預設維持 NAS 上的路徑
 TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "/app/token.pickle")
@@ -37,24 +42,56 @@ CLIENT_SECRET_PATH = os.getenv("GOOGLE_CLIENT_SECRET_PATH", "/app/client_secret.
 def get_mime(file_path):
     return str(mimetypes.guess_type(file_path)[0])
 
-def authenticate():
+class GoogleAuthError(Exception):
+    """Google OAuth token 無法使用（需要人工重新授權）。"""
+
+
+REAUTH_HINT = (
+    "重新授權：在有瀏覽器的機器跑 photo_syncer 的 tools/get_cred.py 產生 token.pickle，"
+    "再用臨時 pod 複製進 PVC photo-syncer-tokens（見 k3s-cluster deploy/base/apps/photo-syncer/CLAUDE.md）"
+)
+
+
+def _auth_failed(reason):
+    logging.error("Google OAuth 失效：%s", reason)
+    notify_admin(f"🔑 photo-syncer Google OAuth 失效，上傳與相簿功能都無法使用\n原因：{reason}\n{REAUTH_HINT}",
+                 dedup_key="google-oauth")
+    raise GoogleAuthError(reason)
+
+
+def _refresh(creds):
+    try:
+        creds.refresh(Request())
+    except Exception as e:
+        _auth_failed(f"refresh token 失敗（{type(e).__name__}: {e}）")
+
+
+def authenticate(interactive=False):
+    """讀 token.pickle，過期就 refresh。
+
+    interactive=True（只給 tools/get_cred.py 用）才會跑瀏覽器授權流程；
+    服務內沒有瀏覽器，舊版在這裡呼叫 run_local_server 會讓 request 永遠卡住，改成告警並拋 GoogleAuthError。
+    """
     creds = None
     if os.path.exists(TOKEN_PATH):
         with open(TOKEN_PATH, "rb") as tokenFile:
             creds = pickle.load(tokenFile)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
-            creds = flow.run_local_server(port=0, open_browser=False)
-        with open(TOKEN_PATH, "wb") as tokenFile:
-            pickle.dump(creds, tokenFile)
+    if creds and creds.valid:
+        return creds
+    if creds and creds.expired and creds.refresh_token:
+        _refresh(creds)
+    elif interactive:
+        flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
+        creds = flow.run_local_server(port=0, open_browser=False)
+    else:
+        _auth_failed(f"{TOKEN_PATH} 不存在或沒有 refresh token")
+    with open(TOKEN_PATH, "wb") as tokenFile:
+        pickle.dump(creds, tokenFile)
     return creds
 
 def get_service(creds):
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        _refresh(creds)
     return build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
 
 def get_or_create_album(service, album_name="My New Album"):
@@ -248,7 +285,7 @@ def upload_photo_bytes(creds, photo_path):
     with open(photo_path, "rb") as file:
         binary_data = file.read()
 
-    response = requests.post(UPLOAD_PHOTO_BYTES_ENDPOINT, headers=headers, data=binary_data)
+    response = requests.post(UPLOAD_PHOTO_BYTES_ENDPOINT, headers=headers, data=binary_data, timeout=UPLOAD_TIMEOUT)
     if response.status_code == 200:
         return response.text
     else:
@@ -281,7 +318,7 @@ def add_photos_to_album(creds, album_id, filename_token_mapping):
             "newMediaItems": new_media_items
         }
 
-        response = requests.post(ADD_MEDIA_ITEMS_TO_ALBUM_ENDPOINT, json=request_body, headers=headers)
+        response = requests.post(ADD_MEDIA_ITEMS_TO_ALBUM_ENDPOINT, json=request_body, headers=headers, timeout=API_TIMEOUT)
         if response.status_code != 200:
             raise Exception(f"Failed to add media items: {response.status_code} - {response.text}")
 
