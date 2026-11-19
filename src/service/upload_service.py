@@ -248,6 +248,12 @@ def run_upload(auth, creds, person_id, album_id, num_photos, google_album_id, to
             except Exception as e:
                 logging.error(f"上傳 {filename} 失敗: {e}")
             finally:
+                # 下載的原圖只是上傳用的暫存：bytes 已送到 Google（之後 batchCreate 只用 upload token），立即刪除
+                # （舊版從不刪除，NAS 上累積到 7,651 張 / 19G）
+                try:
+                    os.remove(saved_path)
+                except OSError:
+                    pass
                 photo_queue.task_done()
 
     downloaders = [threading.Thread(target=download_worker) for _ in range(NUM_DOWNLOAD_THREADS)]
