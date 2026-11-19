@@ -29,7 +29,36 @@ NUM_UPLOAD_THREADS = 16
 
 face_cache = TTLCache(maxsize=100, ttl=60)
 
-def background_upload(creds, auth, token, album_name, person_id, album_id, num_photos, start_time, batch_id, start_dt=None, end_dt=None):
+# 同一本相簿同時只能有一個上傳：每次上傳都會先清空相簿再放新照片，兩個同時跑會互相清掉對方的照片。
+# gunicorn 只有 1 個 worker process，所以用 process 內的鎖即可。超過 ALBUM_LOCK_TTL 秒視為卡住、自動失效。
+ALBUM_LOCK_TTL = 30 * 60
+_album_uploads = {}
+_album_uploads_lock = threading.Lock()
+
+
+def try_claim_album(album_name):
+    with _album_uploads_lock:
+        started = _album_uploads.get(album_name)
+        if started is not None and time.time() - started < ALBUM_LOCK_TTL:
+            return False
+        _album_uploads[album_name] = time.time()
+        return True
+
+
+def release_album(album_name):
+    with _album_uploads_lock:
+        _album_uploads.pop(album_name, None)
+
+
+def background_upload(creds, auth, token, album_name, *args, **kwargs):
+    """背景上傳；不論成功、失敗或例外都會釋放相簿鎖。"""
+    try:
+        _background_upload(creds, auth, token, album_name, *args, **kwargs)
+    finally:
+        release_album(album_name)
+
+
+def _background_upload(creds, auth, token, album_name, person_id, album_id, num_photos, start_time, batch_id, start_dt=None, end_dt=None):
     try:
         service = get_service(creds)
         google_album_id = get_or_create_album(service, album_name)
@@ -173,10 +202,15 @@ def handle_upload(request, creds, session):
     if not person_id and not album_id:
         return jsonify({"error": "請提供 personID 或 albumID"}), 400
 
+    if not try_claim_album(album_name):
+        logging.warning(f"相簿「{album_name}」正在上傳中，拒絕新的上傳")
+        return jsonify({"error": f"相簿「{album_name}」正在上傳中，請等上一批完成", "busy": True}), 409
+
     start_time = time.time()
     new_batch = create_new_batch(auth)
     batch_id = new_batch.id if new_batch else None
     if not new_batch:
+        release_album(album_name)
         return jsonify({"error": "目前尚無上傳批次資料"}), 404
 
     threading.Thread(
