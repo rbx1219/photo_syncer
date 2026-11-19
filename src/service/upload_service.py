@@ -1,5 +1,5 @@
 import os, json, threading, time, queue
-from lib.synology import login, list_people, thumb_photo, download_photo
+from lib.synology import login, list_people, list_selected_people, thumb_photo, download_photo
 from lib.google import (
     get_service, get_or_create_album, add_photos_to_album,
     upload_photo_bytes, delete_all_photos_from_album, move_items_to_trash_album
@@ -95,7 +95,7 @@ def update_people_list(auth, user_id, notify=True):
         return []
 
     try:
-        people_list = list_people(auth, 8)
+        people_list = list_selected_people(auth)
         if not people_list:
             logging.error("無法獲取人員列表，請檢查 Synology 服務是否正常")
             return []

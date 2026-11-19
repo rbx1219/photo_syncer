@@ -161,6 +161,20 @@ def list_people(auth, limit):
     resp.raise_for_status()
     return resp.json()['data']['list']
 
+def list_selected_people(auth, default_limit=8):
+    """要列出／同步的人物。PEOPLE_IDS（逗號分隔的 Synology person id，依此順序）有設定時只回傳這些人；
+    沒設定時沿用舊行為：依名稱排序的前 default_limit 位。
+    """
+    ids = [i.strip() for i in (os.getenv("PEOPLE_IDS") or "").split(",") if i.strip()]
+    if not ids:
+        return list_people(auth, default_limit)
+    people = {str(p["id"]): p for p in list_people(auth, 100)}
+    missing = [i for i in ids if i not in people]
+    if missing:
+        logging.warning(f"PEOPLE_IDS 裡有 Synology 找不到的人物：{missing}")
+    return [people[i] for i in ids if i in people]
+
+
 def list_photos_by_album(auth, album_id, offset=0, limit=100):
     token = auth['data']['synotoken']
     url = f"{BASE_URL}/webapi/entry.cgi/SYNO.Foto.Browse.Item"

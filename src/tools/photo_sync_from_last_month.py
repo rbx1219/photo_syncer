@@ -1,4 +1,4 @@
-from lib.synology import list_people, login
+from lib.synology import list_people, list_selected_people, login
 import os
 from service.sync_service import autonomy_get_interval_time_person, update_sync_status
 from models.database import SessionLocal
@@ -9,7 +9,7 @@ from dateutil.relativedelta import relativedelta
 one_month_ago = datetime.now() - relativedelta(months=1)
 
 auth = login(os.getenv("SYNO_ACCOUNT"), os.getenv("SYNO_PASSWORD"), os.getenv("SYNO_FID"), os.getenv("SYNO_TIMEZONE"))
-persons = list_people(auth, 8)
+persons = list_selected_people(auth)
 person_ids = [person['id'] for person in persons]
 db = SessionLocal()
 for person in persons:
