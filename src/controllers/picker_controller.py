@@ -20,7 +20,7 @@ from models.photo import Photo
 from models.photo_blacklist import PhotoBlacklist
 
 picker_bp = Blueprint("picker", __name__)
-MAX_LIMIT = 10  # LINE carousel 一次最多 12 張，留 2 格餘裕
+MAX_LIMIT = 50  # line-reply 一次回 5 則 carousel × 10 張（LINE 一次回覆最多 5 則、每則 carousel 最多 12 張）
 
 
 def _find_album_id(service, title):
