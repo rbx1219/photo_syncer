@@ -6,6 +6,7 @@ from controllers.photo_controller import photo_bp
 from controllers.blacklist_controller import black_bp
 from controllers.batch_controller import batch_bp
 from controllers.album_controller import album_bp
+from controllers.image_controller import image_bp
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -30,6 +31,7 @@ app.register_blueprint(delete_bp)
 app.register_blueprint(photo_bp)
 app.register_blueprint(black_bp)
 app.register_blueprint(batch_bp)
+app.register_blueprint(image_bp)
 app.register_blueprint(album_bp)
 
 if __name__ == '__main__':
