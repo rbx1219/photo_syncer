@@ -38,7 +38,7 @@ def background_upload(creds, auth, token, album_name, person_id, album_id, num_p
         update_batch_status(batch_id, "failed")
         try:
             requests.post(
-                f"{Config.SERVER_URL}/api/line/notify",
+                f"{Config.LINE_API_URL}/notify",
                 json={
                     "message": f"❌ 建立相簿失敗，第 {batch_id} 批次中止",
                     "token": token
@@ -71,7 +71,7 @@ def background_upload(creds, auth, token, album_name, person_id, album_id, num_p
         update_batch_status(batch_id, "success")
 
         requests.post(
-            f"{Config.SERVER_URL}/api/line/notify",
+            f"{Config.LINE_API_URL}/notify",
             json={
                 "message": f"✅ 上傳完成，共上傳 {result['uploaded']} 張照片",
                 "token": token
@@ -82,7 +82,7 @@ def background_upload(creds, auth, token, album_name, person_id, album_id, num_p
         update_batch_status(batch_id, "failed")
 
         requests.post(
-            f"{Config.SERVER_URL}/api/line/notify",
+            f"{Config.LINE_API_URL}/notify",
             json={
                 "message": f"❌ 上傳失敗,第{batch_id}批次",
                 "token": token
@@ -113,7 +113,7 @@ def update_people_list(auth, user_id, notify=True):
             pass
         elif 'faces' not in face_cache or not face_cache['faces']:
             requests.post(
-                f"{Config.SERVER_URL}/api/line/faces",
+                f"{Config.LINE_API_URL}/faces",
                 json={
                     "faces": result_list,
                     "user_id": user_id
@@ -121,7 +121,7 @@ def update_people_list(auth, user_id, notify=True):
             )
         elif 'faces' in face_cache:
             requests.post(
-                f"{Config.SERVER_URL}/api/line/faces",
+                f"{Config.LINE_API_URL}/faces",
                 json={
                     "faces": face_cache['faces'],
                     "user_id": user_id

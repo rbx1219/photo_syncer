@@ -37,7 +37,7 @@ def background_sync_and_upload(auth, person_id, upload_photo_num, token):
         logging.error(f"⚠️ 人員 {person_id} 的隨機照片選取為空")
         return
 
-    requests.post(f"{Config.SERVER_URL}/api/line/notify", json={
+    requests.post(f"{Config.LINE_API_URL}/notify", json={
         "token": token,
         "message": "✅ 你的人員資料已完成同步！請重新操作。"
     })

@@ -43,7 +43,7 @@ def get_albums():
             cover_url.append(album.get('cover_url'))
         if not album_titles:
             return jsonify({"message": "No album titles found"}), 404
-        requests.post(f"{Config.SERVER_URL}/api/line/album", json={
+        requests.post(f"{Config.LINE_API_URL}/album", json={
             "album_titles": album_titles,
             "covers": cover_url,
             "token": token

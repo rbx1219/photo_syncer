@@ -23,7 +23,7 @@ def get_latest_photo_status_for_person(person_id):
     else:
         message = f"同步完成，但找不到 person_id={person_id} 的照片"
     requests.post(
-        f"{Config.SERVER_URL}/api/line/notify",
+        f"{Config.LINE_API_URL}/notify",
         json={
             "message": message,
             "token": token
